@@ -7,6 +7,12 @@ using AdiIRCAPIv2.Interfaces;
 
 namespace AdiIRC_LibreTranslate_plugin
 {
+    /**
+     * ConfigManager is responsible for loading and saving the plugin configuration.
+     * It reads from a JSON file and provides the current configuration to the plugin.
+     * In case the configuration file does not exist, it creates a default configuration.
+     * Configurations can be easily added by just adding them to the Config class, this will automatically be saved and loaded.
+     */
     internal class ConfigManager
     {
         private readonly string _configPath;
@@ -64,7 +70,7 @@ namespace AdiIRC_LibreTranslate_plugin
     {
         public string UserLanguage { get; set; } = "EN";
         public string ApiPath { get; set; } = "http://192.168.1.10:5000/translate";
-        public string eliteDangerousLogPath { get; set; } = "C:\\Users\\%userprofile%\\Saved Games\\Frontier Developments\\Elite Dangerous";
+        public string eliteDangerousLogPath { get; set; } = "%userprofile%\\Saved Games\\Frontier Developments\\Elite Dangerous";
         public string translateCommand { get; set; } = "/tr";
     }
 }
