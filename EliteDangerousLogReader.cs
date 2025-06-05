@@ -3,8 +3,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Timers;
 using System.Web.Script.Serialization;
 
@@ -40,9 +38,9 @@ namespace AdiIRC_LibreTranslate_plugin
             // Replace environment variables if they exist in the path
             _logDirectoryPath = Environment.ExpandEnvironmentVariables(logDirectoryPath);
             _jsonSerializer = new JavaScriptSerializer();
-            
+
             // Initialize the timer but don't start it yet
-            _checkTimer = new System.Timers.Timer(60000); // 60000ms = 1 minute
+            _checkTimer = new System.Timers.Timer(5000);
             _checkTimer.Elapsed += CheckForNewLogFiles;
             _checkTimer.AutoReset = true;
             
