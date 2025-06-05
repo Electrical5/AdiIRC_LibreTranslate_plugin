@@ -94,7 +94,8 @@ namespace AdiIRC_LibreTranslate_plugin
                     string confidence = translationResult?.detectedLanguage?.confidence.ToString("0") ?? "N/A";
                     translationResult.printableResponse = $"[Translated {sourceLanguage.ToUpper()}|{targetLanguage.ToUpper()} {confidence}%]: {translatedMessage}";
 
-                    if (!string.IsNullOrEmpty(translatedMessage))
+                    //Make sure translated message is set and it's not the same as the original text.
+                    if (!string.IsNullOrEmpty(translatedMessage) && !string.Equals(translatedMessage, text, StringComparison.OrdinalIgnoreCase))
                     {
                         string output = $"[Translated {sourceLanguage.ToUpper()}|{targetLanguage.ToUpper()} {confidence}%]: {translatedMessage}";
                         //Only consider it a success if it was actually translated to a different language.
