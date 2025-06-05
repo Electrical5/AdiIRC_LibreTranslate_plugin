@@ -68,9 +68,16 @@ namespace AdiIRC_LibreTranslate_plugin
 
     public class Config
     {
+        // Translator settings
         public string UserLanguage { get; set; } = "EN";
         public string ApiPath { get; set; } = "http://192.168.1.10:5000/translate";
         public string eliteDangerousLogPath { get; set; } = "%userprofile%\\Saved Games\\Frontier Developments\\Elite Dangerous";
         public string translateCommand { get; set; } = "/tr";
+
+        // Feature toggles
+        public bool EnableEliteDangerousLogReading { get; set; } = true;
+        public bool EnableAdiIRCPrivateMessageTranslation { get; set; } = true;
+        public bool EnableAdiIRCPublicMessageTranslation { get; set; } = true;
+        public bool EnableCommandHandling { get; set; } = true;
     }
 }

@@ -4,6 +4,27 @@ using AdiIRCAPIv2.Arguments.PrivateMessages;
 using AdiIRCAPIv2.Interfaces;
 using IChannel = AdiIRCAPIv2.Interfaces.IChannel;
 
+/** Project explanation:
+ * This project aims to break the language barrier in AdiIRC and Elite Dangerous by providing automatic translation of chat messages.
+ * The project is very configurable, allowing users to set their preferred translation API endpoint and language.
+ * 
+ * This plugin has 3 configurable functionalities:
+ * - "/tr <language code> <text>" command to translate text in the editbox to any language, bind is configurable.
+ * - Automatic translation of foreign AdiIRC messages in channels and private messages
+ * - Automatic translation of Elite Dangerous chat messages.
+ * 
+ * Configuration file is located in the AdiIRC config folder, named "AdiIRC_LibreTranslate_plugin_settings.json".
+ * By default %userprofile%\AppData\Local\AdiIRC\AdiIRC_LibreTranslate_plugin_settings.json
+ * 
+ * If the configuration file does not exist, it will be created with default values.
+ * 
+ * There's a few classes in this project:
+ * - ConfigManager: Handles loading and saving the plugin configuration.
+ * - LibreTranslate: Handles communication with the LibreTranslate API for translations.
+ * - EliteDangerousLogReader: Monitors the Elite Dangerous log file for chat messages and translates them.
+ * - CommandHandler: Handles the "/tr" command for translating text in the editbox.
+ * - AdiIRC_LibreTranslate_plugin: The main plugin class that initializes everything and hooks into AdiIRC events.
+ */
 namespace AdiIRC_LibreTranslate_plugin
 {
     public class AdiIRC_LibreTranslate_plugin : IPlugin
@@ -11,7 +32,7 @@ namespace AdiIRC_LibreTranslate_plugin
         public string PluginName => "AdiIRC LibreTranslate Plugin";
         public string PluginDescription => "Translates chat messages from both ED and AdiIRC";
         public string PluginAuthor => "";
-        public string PluginVersion => "0.1";
+        public string PluginVersion => "0.9";
         public string PluginEmail => "";
 
         public IPluginHost _host;
@@ -20,13 +41,6 @@ namespace AdiIRC_LibreTranslate_plugin
         private LibreTranslate translator;
         private EliteDangerousLogReader logReader;
         private CommandHandler commandHandler;
-
-        //TODO
-        // - Optimize error in case Elite Dangerous log file is not found or not readable
-        // - Add configuration options for enabling/disabling features
-        // - Clean up / refactor code for better readability and maintainability
-        // - Improve readme documentation for users and developers
-        // - Investigate if we should increase polling rate for new logfiles or even use file system watchers
 
         /** Initialize the plugin with the AdiIRC plugin host.
          * This method sets up the translator, log reader, and command handler using the configuration manager.
@@ -37,22 +51,74 @@ namespace AdiIRC_LibreTranslate_plugin
             _host = pluginHost;
             _host.ActiveIWindow.OutputText("LibreTranslate plugin loaded. Loading configuration.");
 
-            var configPath = _host.ConfigFolder + "translate.json";
+            var configPath = _host.ConfigFolder + "AdiIRC_LibreTranslate_plugin_settings.json";
             configManager = new ConfigManager(configPath, _host);
             translator = new LibreTranslate(configManager.CurrentConfig.ApiPath, configManager.CurrentConfig.UserLanguage);
             
-            // Initialize and set up the log reader
-            logReader = new EliteDangerousLogReader(configManager.CurrentConfig.eliteDangerousLogPath);
-            logReader.NewLogFileDetected += OnNewLogFileDetected;
-            logReader.ChatMessageReceived += OnChatMessageReceived;
-            logReader.StartMonitoring();
+            // Initialize and set up the log reader if enabled
+            if (configManager.CurrentConfig.EnableEliteDangerousLogReading)
+            {
+                InitializeEliteDangerousLogReader();
+                _host.ActiveIWindow.OutputText("Elite Dangerous log reading is enabled.");
+            }
+            else
+            {
+                _host.ActiveIWindow.OutputText("Elite Dangerous log reading is disabled in configuration.");
+            }
 
-            // Translate incoming AdiIRC messages
-            _host.OnChannelNormalMessage += OnChannelNormalMessage;
-            _host.OnPrivateNormalMessage += OnPrivateNormalMessage;
+            // Set up channel message translation if enabled
+            if (configManager.CurrentConfig.EnableAdiIRCPublicMessageTranslation)
+            {
+                _host.OnChannelNormalMessage += OnChannelNormalMessage;
+                _host.ActiveIWindow.OutputText("AdiIRC public message translation enabled.");
+            }
+            else
+            {
+                _host.ActiveIWindow.OutputText("AdiIRC public message translation is disabled in configuration.");
+            }
 
-            // Initialize command handler
-            commandHandler = new CommandHandler(_host, translator, configManager.CurrentConfig.translateCommand);
+            // Set up private message translation if enabled
+            if (configManager.CurrentConfig.EnableAdiIRCPrivateMessageTranslation)
+            {
+                _host.OnPrivateNormalMessage += OnPrivateNormalMessage;
+                _host.ActiveIWindow.OutputText("AdiIRC private message translation enabled.");
+            }
+            else
+            {
+                _host.ActiveIWindow.OutputText("AdiIRC private message translation is disabled in configuration.");
+            }
+
+            // Initialize command handler if enabled
+            if (configManager.CurrentConfig.EnableCommandHandling)
+            {
+                commandHandler = new CommandHandler(_host, translator, configManager.CurrentConfig.translateCommand);
+                _host.ActiveIWindow.OutputText($"Command handling enabled. Use {configManager.CurrentConfig.translateCommand} to translate text.");
+            }
+            else
+            {
+                _host.ActiveIWindow.OutputText("Command handling is disabled in configuration.");
+            }
+        }
+
+        private void InitializeEliteDangerousLogReader()
+        {
+            try
+            {
+                // Pass the plugin host to the log reader for proper logging
+                logReader = new EliteDangerousLogReader(
+                    configManager.CurrentConfig.eliteDangerousLogPath,
+                    _host,
+                    false); // Set to true to enable debug logging
+                
+                logReader.NewLogFileDetected += OnNewLogFileDetected;
+                logReader.ChatMessageReceived += OnChatMessageReceived;
+                logReader.StartMonitoring();
+                _host.ActiveIWindow.OutputText("Elite Dangerous log reading enabled.");
+            }
+            catch (Exception ex)
+            {
+                _host.ActiveIWindow.OutputText($"Error initializing Elite Dangerous log reader: {ex.Message}");
+            }
         }
         
         private void OnNewLogFileDetected(object sender, string newLogFileName)
@@ -122,6 +188,17 @@ namespace AdiIRC_LibreTranslate_plugin
                 logReader.ChatMessageReceived -= OnChatMessageReceived;
                 logReader.Dispose();
                 logReader = null;
+            }
+
+            // Unsubscribe from event handlers if they were set up
+            if (configManager.CurrentConfig.EnableAdiIRCPublicMessageTranslation)
+            {
+                _host.OnChannelNormalMessage -= OnChannelNormalMessage;
+            }
+
+            if (configManager.CurrentConfig.EnableAdiIRCPrivateMessageTranslation)
+            {
+                _host.OnPrivateNormalMessage -= OnPrivateNormalMessage;
             }
             
             commandHandler = null;
