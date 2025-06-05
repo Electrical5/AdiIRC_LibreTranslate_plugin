@@ -3,28 +3,26 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
-using System.Timers;
+using System.Threading;
 using System.Web.Script.Serialization;
+using AdiIRCAPIv2.Interfaces;
 
 namespace AdiIRC_LibreTranslate_plugin
 {
-    /** This hot garbage is an mostly AI generated C# class that reads Elite Dangerous log files
-     * Preferably only dig into it using AI since it's way too messy and long to read manually
-     * Probably needs a lot of refactoring and cleanup, but we vibecoding now.
-     * 
-     * Reads Elite Dangerous log files and processes chat messages
-     * Fires events when new log files are detected or chat messages are received
-     */
+    // Reads Elite Dangerous log files and processes chat messages
+    // Monitors the log directory for new files and file changes using FileSystemWatcher
+    // Fires events when new log files are detected or chat messages are received
     internal class EliteDangerousLogReader : IDisposable
     {
         private readonly string _logDirectoryPath;
-        private System.Timers.Timer _checkTimer;
-        private bool _isMonitoring = false;
         private FileSystemWatcher _fileWatcher;
         private StreamReader _currentFileReader;
         private string _currentLogFilePath;
         private long _currentPosition = 0;
         private readonly JavaScriptSerializer _jsonSerializer;
+        private bool _isMonitoring = false;
+        private readonly object _lockObject = new object();
+        private readonly IPluginHost _host;
         
         // The latest log file name
         public string LatestLogFileName { get; private set; }
@@ -33,32 +31,39 @@ namespace AdiIRC_LibreTranslate_plugin
         public event EventHandler<string> NewLogFileDetected;
         public event EventHandler<ChatMessageEventArgs> ChatMessageReceived;
 
-        public EliteDangerousLogReader(string logDirectoryPath)
+        public EliteDangerousLogReader(string logDirectoryPath, IPluginHost host = null, bool enableDebugLogging = false)
         {
             // Replace environment variables if they exist in the path
             _logDirectoryPath = Environment.ExpandEnvironmentVariables(logDirectoryPath);
             _jsonSerializer = new JavaScriptSerializer();
-
-            // Initialize the timer but don't start it yet
-            _checkTimer = new System.Timers.Timer(5000);
-            _checkTimer.Elapsed += CheckForNewLogFiles;
-            _checkTimer.AutoReset = true;
+            _host = host;
             
-            // Initialize the file watcher but don't start it yet
+            // Initialize the file watcher
+            InitializeFileWatcher();
+        }
+
+        // Initialize the FileSystemWatcher to monitor the log directory
+        private void InitializeFileWatcher()
+        {
+            if (!Directory.Exists(_logDirectoryPath))
+            {
+                LogMessage($"Log directory not found: {_logDirectoryPath}");
+                return;
+            }
+
             _fileWatcher = new FileSystemWatcher(_logDirectoryPath)
             {
                 Filter = "Journal.*.log",
-                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size,
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime | NotifyFilters.FileName,
                 EnableRaisingEvents = false
             };
             
             _fileWatcher.Changed += OnFileChanged;
             _fileWatcher.Created += OnFileCreated;
+            _fileWatcher.Error += OnFileWatcherError;
         }
 
-        /// <summary>
-        /// Starts monitoring for new log files and log entries
-        /// </summary>
+        // Starts monitoring for new log files and log entries
         public void StartMonitoring()
         {
             if (_isMonitoring)
@@ -73,124 +78,135 @@ namespace AdiIRC_LibreTranslate_plugin
                 OpenAndWatchCurrentLogFile();
             }
             
-            // Start the timer to check periodically for new log files
-            _checkTimer.Start();
-            
             // Start the file watcher
-            _fileWatcher.EnableRaisingEvents = true;
+            if (_fileWatcher != null)
+            {
+                _fileWatcher.EnableRaisingEvents = true;
+            }
             
             _isMonitoring = true;
         }
 
-        /// <summary>
-        /// Stops monitoring for new log files
-        /// </summary>
+        // Stops monitoring for new log files
         public void StopMonitoring()
         {
             if (!_isMonitoring)
                 return;
 
-            _checkTimer.Stop();
-            _fileWatcher.EnableRaisingEvents = false;
+            if (_fileWatcher != null)
+                _fileWatcher.EnableRaisingEvents = false;
+                
             CloseCurrentLogFile();
             _isMonitoring = false;
         }
 
-        /// <summary>
-        /// Gets called by the timer to check for new log files
-        /// </summary>
-        private void CheckForNewLogFiles(object sender, ElapsedEventArgs e)
+        // Handle file watcher errors
+        private void OnFileWatcherError(object sender, ErrorEventArgs e)
         {
-            FindLatestLogFile();
+            LogMessage($"File watcher error: {e.GetException().Message}");
+            
+            // Try to restart the watcher
+            if (_fileWatcher != null && _isMonitoring)
+            {
+                _fileWatcher.EnableRaisingEvents = false;
+                _fileWatcher.EnableRaisingEvents = true;
+            }
         }
 
-        /// <summary>
-        /// Called when a file in the watched directory is changed
-        /// </summary>
+        // Called when a file in the watched directory is changed
         private void OnFileChanged(object sender, FileSystemEventArgs e)
         {
-            if (e.FullPath == _currentLogFilePath)
+            lock (_lockObject)
             {
-                // The current log file has been updated, read new content
-                ReadNewLogFileContent();
+                // Handle duplicate events by checking if this is our current file
+                if (e.FullPath == _currentLogFilePath)
+                {
+                    // The current log file has been updated, read new content
+                    ReadNewLogFileContent();
+                }
             }
         }
 
-        /// <summary>
-        /// Called when a new file is created in the watched directory
-        /// </summary>
+        // Called when a new file is created in the watched directory
         private void OnFileCreated(object sender, FileSystemEventArgs e)
         {
-            if (Path.GetFileName(e.FullPath).StartsWith("Journal.") && e.FullPath.EndsWith(".log"))
+            lock (_lockObject)
             {
-                // A new log file was created, check if it's newer than our current one
-                FindLatestLogFile();
+                if (Path.GetFileName(e.FullPath).StartsWith("Journal.") && e.FullPath.EndsWith(".log"))
+                {
+                    // Check if this new file is newer than our current one
+                    DateTime newFileTime = File.GetLastWriteTime(e.FullPath);
+                    DateTime currentFileTime = string.IsNullOrEmpty(_currentLogFilePath) ? 
+                        DateTime.MinValue : File.GetLastWriteTime(_currentLogFilePath);
+                        
+                    if (newFileTime > currentFileTime)
+                    {
+                        // This is a newer log file, switch to it
+                        FindLatestLogFile();
+                    }
+                }
             }
         }
 
-        /// <summary>
-        /// Finds the latest log file in the specified directory and updates the LatestLogFileName property
-        /// </summary>
+        // Finds the latest log file in the specified directory and updates the LatestLogFileName property
         private void FindLatestLogFile()
         {
-            try
+            lock (_lockObject)
             {
-                if (!Directory.Exists(_logDirectoryPath))
+                try
                 {
-                    // Directory doesn't exist, can't find log files
-                    return;
-                }
-
-                // Get all log files matching the pattern
-                string[] logFiles = Directory.GetFiles(_logDirectoryPath, "Journal.*.log");
-
-                if (logFiles.Length == 0)
-                {
-                    // No log files found
-                    return;
-                }
-
-                // Find the file with the most recent write time
-                string latestFile = logFiles
-                    .OrderByDescending(f => File.GetLastWriteTime(f))
-                    .FirstOrDefault();
-
-                if (latestFile == null)
-                {
-                    // No files found after filtering
-                    return;
-                }
-
-                // Extract just the filename without the path
-                string latestFileName = Path.GetFileName(latestFile);
-
-                // If this is a different file than what we had before
-                if (LatestLogFileName != latestFileName)
-                {
-                    string previousLogFile = LatestLogFileName;
-                    LatestLogFileName = latestFileName;
-                    _currentLogFilePath = latestFile;
-                    
-                    // If we were already monitoring, switch to the new file
-                    if (_isMonitoring)
+                    if (!Directory.Exists(_logDirectoryPath))
                     {
-                        CloseCurrentLogFile();
-                        OpenAndWatchCurrentLogFile();
+                        return;
                     }
-                    
-                    // Raise the event to notify listeners
-                    NewLogFileDetected?.Invoke(this, LatestLogFileName);
+
+                    // Get all log files matching the pattern
+                    string[] logFiles = Directory.GetFiles(_logDirectoryPath, "Journal.*.log");
+
+                    if (logFiles.Length == 0)
+                    {
+                        return;
+                    }
+
+                    // Find the file with the most recent write time
+                    string latestFile = logFiles
+                        .OrderByDescending(f => File.GetLastWriteTime(f))
+                        .FirstOrDefault();
+
+                    if (latestFile == null)
+                    {
+                        return;
+                    }
+
+                    // Extract just the filename without the path
+                    string latestFileName = Path.GetFileName(latestFile);
+
+                    // If this is a different file than what we had before
+                    if (LatestLogFileName != latestFileName)
+                    {
+                        string previousLogFile = LatestLogFileName;
+                        LatestLogFileName = latestFileName;
+                        _currentLogFilePath = latestFile;
+                        
+                        // If we were already monitoring, switch to the new file
+                        if (_isMonitoring)
+                        {
+                            CloseCurrentLogFile();
+                            OpenAndWatchCurrentLogFile();
+                        }
+                        
+                        // Raise the event to notify listeners
+                        NewLogFileDetected?.Invoke(this, LatestLogFileName);
+                    }
                 }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error finding latest log file: {ex.Message}");
+                catch (Exception ex)
+                {
+                    LogMessage($"Error finding latest log file: {ex.Message}");
+                }
             }
         }
         
-        /// <summary>
-        /// Opens the current log file for reading and sets up position tracking
-        /// </summary>
+        // Opens the current log file for reading and sets up position tracking
         private void OpenAndWatchCurrentLogFile()
         {
             try
@@ -202,7 +218,7 @@ namespace AdiIRC_LibreTranslate_plugin
                     return;
                 }
                 
-                // Open the file for reading
+                // Open the file for reading with read sharing enabled
                 var fileStream = new FileStream(
                     _currentLogFilePath, 
                     FileMode.Open, 
@@ -211,25 +227,17 @@ namespace AdiIRC_LibreTranslate_plugin
                 
                 _currentFileReader = new StreamReader(fileStream, Encoding.UTF8);
                 
-                // Go to the end of existing content if file already has content
-                _currentPosition = fileStream.Length;
-                
-                // If the file has content, seek to the beginning and process all existing entries
-                if (_currentPosition > 0)
-                {
-                    _currentFileReader.BaseStream.Seek(0, SeekOrigin.Begin);
-                    ReadNewLogFileContent(true);
-                }
+                // Process all existing entries in the file
+                _currentPosition = 0;
+                ReadNewLogFileContent(true);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error opening log file: {ex.Message}");
+                LogMessage($"Error opening log file: {ex.Message}");
             }
         }
         
-        /// <summary>
-        /// Closes the current log file reader if open
-        /// </summary>
+        // Closes the current log file reader if open
         private void CloseCurrentLogFile()
         {
             if (_currentFileReader != null)
@@ -239,9 +247,7 @@ namespace AdiIRC_LibreTranslate_plugin
             }
         }
 
-        /// <summary>
-        /// Reads any new content in the current log file
-        /// </summary>
+        // Reads any new content in the current log file
         private void ReadNewLogFileContent(bool processAllEntries = false)
         {
             try
@@ -251,41 +257,47 @@ namespace AdiIRC_LibreTranslate_plugin
                     return;
                 }
 
-                // If we should read from the current position (not process all entries)
-                if (!processAllEntries)
+                lock (_lockObject)
                 {
-                    // Check if there is new content by comparing file length to current position
-                    _currentFileReader.BaseStream.Seek(0, SeekOrigin.End);
-                    long newLength = _currentFileReader.BaseStream.Position;
-                    
-                    if (newLength <= _currentPosition)
+                    // If we should read from the current position (not process all entries)
+                    if (!processAllEntries)
                     {
-                        return; // No new content
+                        // Check if there is new content by comparing file length to current position
+                        _currentFileReader.BaseStream.Seek(0, SeekOrigin.End);
+                        long newLength = _currentFileReader.BaseStream.Position;
+                        
+                        if (newLength <= _currentPosition)
+                        {
+                            return; // No new content
+                        }
+                        
+                        // Move to where we last read
+                        _currentFileReader.BaseStream.Seek(_currentPosition, SeekOrigin.Begin);
+                    }
+                    else
+                    {
+                        // Start from the beginning for a full read
+                        _currentFileReader.BaseStream.Seek(0, SeekOrigin.Begin);
+                    }
+
+                    // Read and process all lines until end of file
+                    string line;
+                    while ((line = _currentFileReader.ReadLine()) != null)
+                    {
+                        ProcessLogEntry(line);
                     }
                     
-                    // Move to where we last read
-                    _currentFileReader.BaseStream.Seek(_currentPosition, SeekOrigin.Begin);
+                    // Update current position
+                    _currentPosition = _currentFileReader.BaseStream.Position;
                 }
-
-                // Read and process all lines until end of file
-                string line;
-                while ((line = _currentFileReader.ReadLine()) != null)
-                {
-                    ProcessLogEntry(line);
-                }
-                
-                // Update current position
-                _currentPosition = _currentFileReader.BaseStream.Position;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error reading log file content: {ex.Message}");
+                LogMessage($"Error reading log file content: {ex.Message}");
             }
         }
         
-        /// <summary>
-        /// Process a log entry and handle relevant events
-        /// </summary>
+        // Process a log entry and handle relevant events
         private void ProcessLogEntry(string jsonLine)
         {
             try
@@ -332,21 +344,26 @@ namespace AdiIRC_LibreTranslate_plugin
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error processing log entry: {ex.Message}");
+                LogMessage($"Error processing log entry: {ex.Message}");
             }
         }
         
-        /// <summary>
-        /// Manually triggers a check for the latest log file
-        /// </summary>
+        // Logs a message to the AdiIRC window if host is available
+        private void LogMessage(string message)
+        {
+            if (_host != null)
+            {
+                _host.ActiveIWindow.OutputText($"[ED Log] {message}");
+            }
+        }
+        
+        // Manually triggers a check for the latest log file
         public void CheckNow()
         {
-            FindLatestLogFile();
+            ThreadPool.QueueUserWorkItem(_ => FindLatestLogFile());
         }
 
-        /// <summary>
-        /// Gets the full path to the latest log file
-        /// </summary>
+        // Gets the full path to the latest log file
         public string GetLatestLogFilePath()
         {
             if (string.IsNullOrEmpty(LatestLogFileName))
@@ -359,17 +376,11 @@ namespace AdiIRC_LibreTranslate_plugin
         {
             StopMonitoring();
             
-            if (_checkTimer != null)
-            {
-                _checkTimer.Elapsed -= CheckForNewLogFiles;
-                _checkTimer.Dispose();
-                _checkTimer = null;
-            }
-            
             if (_fileWatcher != null)
             {
                 _fileWatcher.Changed -= OnFileChanged;
                 _fileWatcher.Created -= OnFileCreated;
+                _fileWatcher.Error -= OnFileWatcherError;
                 _fileWatcher.Dispose();
                 _fileWatcher = null;
             }
@@ -378,9 +389,7 @@ namespace AdiIRC_LibreTranslate_plugin
         }
     }
     
-    /// <summary>
-    /// Event args class for chat message events
-    /// </summary>
+    // Event args class for chat message events
     public class ChatMessageEventArgs : EventArgs
     {
         public string Channel { get; set; }
