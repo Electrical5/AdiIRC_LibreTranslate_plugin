@@ -42,7 +42,13 @@ Conveniently show both the native and translated message (and accuracy).
 
 # Special thanks
 
-Special thanks to Delrynn and Velica Foriana for [AdiIRC_Deepl_Plugin](https://github.com/Delrynn/adiIRC_DeepL_plugin).
+Special thanks to:
+
+- Delrynn and Velica Foriana for [AdiIRC_Deepl_Plugin](https://github.com/Delrynn/adiIRC_DeepL_plugin) as inspiration and starting point.
+
+- Tzarnal for documenting the AdiIRC plugin API.
+
+- Copilot / Claude 3.7 Sonnet for keeping me busy refactoring AI garbage.
 
 # License
 
